@@ -7,7 +7,7 @@ import type { MenuItem, MenuCategory, OrderItem, Table, Order } from '../types';
 // 3. Enums (Reales): Llevan "import" normal
 import { OrderStatus } from '../types';
 
-import { ShoppingCart, Plus, Minus, X, ArrowLeft, Bell } from 'lucide-react';
+import { ShoppingCart,  X, ArrowLeft, Bell } from 'lucide-react';
 
 interface WaiterPanelProps {
   tables: Table[];
