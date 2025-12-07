@@ -1,7 +1,6 @@
 import { MenuItem, Order } from '../types';
 
 const API_URL = 'https://el-refugio-api-server.onrender.com';
-
 export const api = {
   // 1. Obtener Productos
   getProducts: async (): Promise<MenuItem[]> => {
