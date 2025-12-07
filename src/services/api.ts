@@ -22,7 +22,6 @@ export const api = {
       return [];
     }
   },
-
   // 2. Obtener Pedidos (¡NUEVO!)
   getOrders: async (): Promise<Order[]> => {
     try {
