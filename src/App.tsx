@@ -1,17 +1,19 @@
-import React, { useState, useEffect } from 'react'; // <--- Agregamos useEffect
+import React, { useState, useEffect, useCallback } from 'react';
 import { LayoutGrid, UtensilsCrossed, Settings, LogOut, Bike } from 'lucide-react';
+import { Toaster, toast } from 'sonner'; // Importación de notificaciones
 import WaiterPanel from './components/WaiterPanel';
 import KitchenPanel from './components/KitchenPanel';
 import AdminPanel from './components/AdminPanel';
 import DeliveryPanel from './components/DeliveryPanel';
 import LoginScreen from './components/LoginScreen';
 import { MenuItem, MenuCategory, Table, Order, OrderStatus, AppView, OrderItem, User, UserRole } from './types';
-import { api } from './services/api'; // <--- Importamos nuestro cable
+import { api } from './services/api'; // Tu cable a Render
 
-// Mock Data Estática (Solo categorías y mesas por ahora)
+// Datos Iniciales
 const INITIAL_CATEGORIES: MenuCategory[] = [
   { id: '1', name: 'Hamburguesas', icon: '🍔' },
   { id: '2', name: 'Bebidas', icon: '🥤' },
+  { id: '3', name: 'Tacos', icon: '🌮' },
 ];
 const INITIAL_TABLES: Table[] = Array.from({ length: 6 }, (_, i) => ({ id: `t-${i+1}`, number: i + 1, isOccupied: false }));
 
@@ -23,119 +25,245 @@ const App: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [generatedMenu, setGeneratedMenu] = useState<MenuItem[]>([]);
   const [categories] = useState(INITIAL_CATEGORIES);
-  
-  // ESTADO DE MENU ITEMS (Inicia vacío, se llena desde Python)
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
 
-  
-
-  // EFECTO DE CARGA: Al iniciar, pedir TODO a Python
-  useEffect(() => {
-    const loadData = async () => {
-      console.log("🔌 Sincronizando sistema...");
-      
-      // 1. Cargar Menú
-      const products = await api.getProducts();
-      if (products.length > 0) setMenuItems(products);
-
-      // 2. Cargar Pedidos Activos (¡NUEVO!)
-      const serverOrders = await api.getOrders();
-      if (serverOrders.length > 0) {
+  // 1. FUNCIÓN CENTRAL DE CARGA
+  const fetchOrders = useCallback(async () => {
+    try {
+      const serverOrders = await api.get('/orders/');
+      if (Array.isArray(serverOrders)) {
         setOrders(serverOrders);
-        // Marcar mesas ocupadas
-        const occupiedTables = serverOrders.map(o => o.tableId);
-        setTables(prev => prev.map(t => occupiedTables.includes(t.id) ? { ...t, isOccupied: true } : t));
+        // Actualizar ocupación de mesas basado en órdenes vivas
+        const occupiedTables = serverOrders
+            .filter((o: Order) => o.status !== OrderStatus.PAID && o.status !== OrderStatus.CANCELLED)
+            .map((o: Order) => o.tableId);
+            
+        setTables(prev => prev.map(t => 
+            occupiedTables.includes(t.id) ? { ...t, isOccupied: true } : { ...t, isOccupied: false }
+        ));
       }
-    };
-    
-    // Polling: Actualizar cada 5 segundos (Para que la cocina vea cambios sin recargar)
-    loadData();
-    const interval = setInterval(loadData, 5000); 
-    return () => clearInterval(interval);
-
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+    }
   }, []);
+
+  const fetchProducts = async () => {
+      try {
+        const products = await api.get('/products/');
+        if (products.length > 0) setMenuItems(products);
+      } catch (error) {
+        console.error("Error fetching products:", error);
+      }
+  };
+
+  // 2. EFECTO DE INICIO Y POLLING (Auto-refresco)
+  useEffect(() => {
+    if (user) { // Solo sincronizar si hay usuario logueado
+        console.log("🔌 Sincronizando sistema...");
+        fetchProducts();
+        fetchOrders();
+
+        const interval = setInterval(fetchOrders, 5000); // Cada 5 seg
+        return () => clearInterval(interval);
+    }
+  }, [fetchOrders, user]);
 
   const handleLogin = (role: UserRole, username: string) => {
     setUser({ role, username });
-    setView(role === 'COOK' ? 'KITCHEN' : role === 'ADMIN' ? 'ADMIN' : 'WAITER');
+    
+    // CORRECCIÓN: Usamos 'KITCHEN' en lugar de 'COOK'
+    if (role === 'KITCHEN') {
+        setView('KITCHEN');
+    } else if (role === 'ADMIN') {
+        setView('ADMIN');
+    } else {
+        setView('WAITER');
+    }
   };
-
+ 
+  // CREAR ORDEN (Corregido para evitar Error 422)
   const placeOrder = async (tableId: string, items: OrderItem[]) => {
-    // 1. Crear la orden visualmente (Optimistic UI)
-    const newOrder: Order = {
-      id: `ORD-${Date.now().toString().slice(-4)}`,
+    // 1. UI Optimista (Lo que ve el usuario inmediatamente)
+    const tempId = `TEMP-${Date.now()}`;
+    const newOrderVisual: Order = {
+      id: tempId,
       type: 'DINE_IN',
-      tableId,
+      tableId, // React lo necesita así
       items,
       status: OrderStatus.PENDING,
       timestamp: Date.now(),
       dateStr: new Date().toLocaleDateString('en-CA'),
       total: items.reduce((sum, i) => sum + (i.menuItem.price * i.quantity), 0)
     };
-    setOrders(prev => [...prev, newOrder]);
+
+    setOrders(prev => [...prev, newOrderVisual]);
+    
+    // Si la mesa estaba libre, la marcamos ocupada visualmente
     setTables(prev => prev.map(t => t.id === tableId ? { ...t, isOccupied: true } : t));
 
-    // 2. Enviar la orden al Backend (Silenciosamente)
     try {
-        await api.createOrder(newOrder);
-        console.log("✅ Orden guardada en Base de Datos");
+        // 2. TRADUCCIÓN DE DATOS (El secreto para que Python entienda)
+        const orderPayload = {
+            table_id: tableId,  // <--- AQUÍ ESTÁ LA CLAVE (tableId -> table_id)
+            status: "PENDING",
+            total: newOrderVisual.total,
+            // Transformamos los items para mandar solo lo que la BD necesita
+            items: items.map(item => ({
+                product_id: item.menuItem.id, // Mandamos el ID, no el objeto entero
+                quantity: item.quantity,
+                price: item.menuItem.price      // Precio al momento de la venta
+            }))
+        };
+
+        // 3. Enviar el paquete traducido
+        await api.post('/orders/', orderPayload);
+        
+        toast.success("Orden enviada a cocina");
+        fetchOrders(); // Recargar para obtener el ID real de la BD
     } catch (e) {
-        console.error("❌ Error guardando orden en BD", e);
-        alert("Ojo: La orden se ve en pantalla pero no se guardó en la base de datos (Error de conexión)");
+        console.error("❌ Error guardando orden", e);
+        toast.error("Error de conexión al guardar orden");
+        // Opcional: Podrías eliminar la orden visual si falló
     }
   };
 
-  // Lógica para Generar el Menú con IA (Simulación por ahora)
-  const handleGenerateMenu = (concept: string) => {
-    console.log('🤖 Solicitando menú con el concepto:', concept);
-    // **PENDIENTE: LLAMAR A LA API DE PYTHON PARA USAR GEMINI AQUÍ**
-    
-    // SIMULACIÓN DE RESPUESTA DE GEMINI:
-    const dummyMenu: MenuItem[] = [
-      { id: '901', name: 'Taco Cósmico', price: 35.00, categoryId: '2', description: 'Carne al pastor con piña caramelizada, cebolla morada encurtida y chispas de chile de árbol.', imageUrl: '' },
-      { id: '902', name: 'Quesadilla Espacial', price: 65.00, categoryId: '2', description: 'Queso oaxaca y flor de calabaza en tortilla azul nixtamalizada, acompañada de crema de rancho.', imageUrl: '' },
-      { id: '903', name: 'Aguas Frescas Intergalácticas', price: 25.00, categoryId: '4', description: 'Agua de jamaica con un toque de jengibre y miel de agave.', imageUrl: '' },
-    ];
-    
-    setGeneratedMenu(dummyMenu); 
-    alert('Menú generado (simulación). Revisa la pestaña de Generador IA.');
-    
-    // Una vez implementes la API de Python, esta función se actualizará para llamar a api.generateMenu()
+  // src/App.tsx (Añadir dentro del componente App: React.FC)
+
+const handlePayOrder = async (orderId: string, tableId: string) => {
+    try {
+        // 1. Marcar la orden como PAGADA en el Backend
+        await api.put(`/orders/${orderId}/status`, { status: OrderStatus.PAID });
+        
+        // 2. Liberar la mesa en el Backend (si no hay más órdenes activas en esa mesa)
+        
+        // Verificamos si hay otras órdenes activas en esa mesa, excluyendo la que se acaba de pagar
+        const remainingActiveOrders = orders.filter(o => 
+            o.tableId === tableId && 
+            o.id !== orderId &&
+            o.status !== OrderStatus.PAID &&
+            o.status !== OrderStatus.CANCELLED
+        ).length;
+        
+        if (remainingActiveOrders === 0) {
+            // Si es la última orden activa de la mesa, la liberamos
+            await api.put(`/tables/${tableId}/occupancy`, { is_occupied: false });
+            
+            // 3. Actualizar el estado local de la mesa
+            setTables(prev => prev.map(t => t.id === tableId ? { ...t, isOccupied: false } : t));
+        }
+
+        toast.success(`Cuenta pagada. Mesa ${tableId} liberada.`);
+        fetchOrders(); // Recargar el estado global
+    } catch (e) {
+        console.error("Error al pagar la cuenta", e);
+        toast.error("Error al procesar el pago.");
+    }
+};
+
+
+
+  // ACTUALIZAR ESTADO
+  const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
+    try {
+      await api.put(`/orders/${orderId}/status`, { status: newStatus });
+      await fetchOrders(); 
+      
+      // NOTIFICACIÓN (TOAST)
+      if (newStatus === OrderStatus.READY) {
+         const order = orders.find(o => o.id === orderId || o.id === parseInt(orderId));
+         const table = tables.find(t => t.id === order?.tableId);
+         const tableName = table ? `MESA ${table.number}` : 'Una orden';
+         
+         toast.success(`🔔 ¡${tableName} ESTÁ LISTA!`, {
+            duration: 8000,
+            position: 'top-center',
+            style: { border: '2px solid #22c55e', padding: '16px', fontSize: '1.2em' }
+         });
+      }
+      
+      if (newStatus === OrderStatus.CANCELLED) toast.info("Orden cancelada");
+      
+    } catch (error) {
+      console.error("Error updating order:", error);
+      toast.error("Error al actualizar orden");
+    }
   };
 
-  const updateOrderStatus = (orderId: string, status: OrderStatus) => {
-    setOrders(prev => prev.map(o => {
-      if (o.id === orderId) {
-        if (status === OrderStatus.PAID || status === OrderStatus.CANCELLED) {
-             if (o.tableId) setTables(tbls => tbls.map(t => t.id === o.tableId ? { ...t, isOccupied: false } : t));
+  const handleGenerateMenu = async (concept: string) => {
+    toast.info("Generando menú con IA... espere.");
+    try {
+        const generated = await api.post('/ai/generate_menu', { concept });
+        if (Array.isArray(generated)) {
+            setGeneratedMenu(generated);
+            toast.success("Menú generado por IA");
+        } else {
+             const dummyMenu: MenuItem[] = [
+                { id: '901', name: 'Taco Cósmico', price: 35.00, category: 'Tacos', description: 'Carne al pastor con piña caramelizada.', imageUrl: '' },
+                { id: '902', name: 'Quesadilla Espacial', price: 65.00, category: 'Tacos', description: 'Queso oaxaca y flor de calabaza.', imageUrl: '' },
+            ];
+            setGeneratedMenu(dummyMenu);
+            toast.success("Menú simulado recibido");
         }
-        return { ...o, status };
-      }
-      return o;
-    }));
+    } catch (error) {
+        console.error(error);
+        toast.error("Error generando menú");
+    }
   };
+
+  // src/App.tsx (Solo reemplaza la sección del return)
 
   if (!user) return <LoginScreen onLogin={handleLogin} />;
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans flex flex-col">
+      <Toaster /> 
+
       <nav className="bg-slate-900 text-white h-16 flex items-center px-6 justify-between shadow-lg z-50">
         <div className="flex items-center gap-3 font-bold text-xl"><div className="w-8 h-8 bg-primary rounded flex items-center justify-center">R</div> El Refugio</div>
         <div className="flex gap-2">
-          {user.role !== 'COOK' && <button onClick={() => setView('WAITER')} className={`flex gap-2 px-4 py-2 rounded ${view === 'WAITER' ? 'bg-primary' : 'hover:bg-white/10'}`}><LayoutGrid size={20}/> Mesas</button>}
-          {(user.role === 'COOK' || user.role === 'ADMIN') && <button onClick={() => setView('KITCHEN')} className={`flex gap-2 px-4 py-2 rounded ${view === 'KITCHEN' ? 'bg-primary' : 'hover:bg-white/10'}`}><UtensilsCrossed size={20}/> Cocina</button>}
-          {user.role === 'ADMIN' && <button onClick={() => setView('ADMIN')} className={`flex gap-2 px-4 py-2 rounded ${view === 'ADMIN' ? 'bg-primary' : 'hover:bg-white/10'}`}><Settings size={20}/> Admin</button>}
+          {/* CORRECCIÓN: Usamos user?.role para prevenir el error de "Cannot read properties of null" */}
+          {user?.role !== 'KITCHEN' && <button onClick={() => setView('WAITER')} className={`flex gap-2 px-4 py-2 rounded ${view === 'WAITER' ? 'bg-primary' : 'hover:bg-white/10'}`}><LayoutGrid size={20}/> Mesas</button>}
+          
+          {(user?.role === 'KITCHEN' || user?.role === 'ADMIN') && <button onClick={() => setView('KITCHEN')} className={`flex gap-2 px-4 py-2 rounded ${view === 'KITCHEN' ? 'bg-primary' : 'hover:bg-white/10'}`}><UtensilsCrossed size={20}/> Cocina</button>}
+          
+          {user?.role === 'ADMIN' && <button onClick={() => setView('ADMIN')} className={`flex gap-2 px-4 py-2 rounded ${view === 'ADMIN' ? 'bg-primary' : 'hover:bg-white/10'}`}><Settings size={20}/> Admin</button>}
+          
           <button onClick={() => setView('DELIVERY')} className={`flex gap-2 px-4 py-2 rounded ${view === 'DELIVERY' ? 'bg-primary' : 'hover:bg-white/10'}`}><Bike size={20}/></button>
           <button onClick={() => setUser(null)} className="p-2 hover:bg-red-600 rounded ml-4"><LogOut size={20}/></button>
         </div>
       </nav>
 
       <main className="flex-1 overflow-hidden relative">
-        {view === 'WAITER' && <WaiterPanel tables={tables} categories={categories} menuItems={menuItems} orders={orders} onPlaceOrder={placeOrder} />}
-        {view === 'KITCHEN' && <KitchenPanel orders={orders} tables={tables} onUpdateStatus={updateOrderStatus} />}
-        {view === 'ADMIN' && <AdminPanel menuItems={menuItems} 
-      generatedMenu={generatedMenu}
-      onGenerateMenu={handleGenerateMenu} />}
+        {view === 'WAITER' && (
+            <WaiterPanel 
+                tables={tables} 
+                categories={categories} 
+                menuItems={menuItems} 
+                orders={orders} 
+                onPlaceOrder={placeOrder} 
+                onUpdateOrderStatus={handleUpdateOrderStatus}
+                onPayOrder={handlePayOrder}
+            />
+        )}
+        
+        {view === 'KITCHEN' && (
+            <KitchenPanel 
+                orders={orders} 
+                tables={tables} 
+                onUpdateStatus={handleUpdateOrderStatus} 
+            />
+        )}
+        
+        {view === 'ADMIN' && (
+    <AdminPanel 
+        menuItems={menuItems} 
+        generatedMenu={generatedMenu}
+        onGenerateMenu={handleGenerateMenu}
+        orders={orders} // <--- NUEVO
+        tables={tables} // <--- NUEVO
+    />
+)}
+        
         {view === 'DELIVERY' && <DeliveryPanel orders={orders} />}
       </main>
     </div>

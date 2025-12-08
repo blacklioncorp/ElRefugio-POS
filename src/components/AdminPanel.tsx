@@ -1,140 +1,169 @@
 import React, { useState } from 'react';
-import { Settings, Utensils, Zap, BookOpen, Trash2, Edit } from 'lucide-react';
-import type { MenuItem } from '../types';
+// IMPORTANTE: Se elimina Plus y Trash2 si no se usan en el JSX para evitar advertencias
+import type { MenuItem, Order, Table } from '../types'; 
+import { Sparkles, Save, Monitor } from 'lucide-react'; // Monitor es un buen icono para la nueva pestaña
+import { api } from '../services/api';
+import { toast } from 'sonner';
+import { OrderStatus } from '../types'; // Necesario para filtrar las órdenes
 
+// ==========================================================
+// COMPONENTE AUXILIAR: MONITOR DE MESAS
+// ==========================================================
+const TableMonitor: React.FC<{ tables: Table[], orders: Order[] }> = ({ tables, orders }) => {
+    
+    // Obtenemos solo las órdenes activas (PENDIENTE o LISTA)
+    const activeOrders = orders.filter(o => o.status !== OrderStatus.PAID && o.status !== OrderStatus.CANCELLED);
+    
+    // Filtramos las mesas ocupadas que tienen órdenes activas
+    // NOTA: Si una mesa está isOccupied=true, pero no tiene activeOrders, esto puede indicar un error de estado.
+    // Usaremos isOccupied como fuente principal.
+    const occupiedTables = tables.filter(t => t.isOccupied);
+
+    const calculateTotal = (tableId: string): number => {
+        // Encontramos todas las órdenes activas de esta mesa.
+        const tableOrders = activeOrders.filter(o => o.tableId === tableId);
+        if (tableOrders.length === 0) return 0;
+        
+        let total = 0;
+        tableOrders.forEach(order => {
+             order.items.forEach(item => {
+                // CORRECCIÓN: Usar la estructura segura para el precio
+                const itemPrice = item.menuItem?.price || (item as any).menu_item?.price || 0; 
+                const extra = item.extraCharge || 0;
+                total += (itemPrice + extra) * item.quantity;
+            });
+        });
+        return total;
+    };
+
+    return (
+        <div className="bg-white p-6 rounded-xl shadow-sm border">
+            <h3 className="text-2xl font-bold mb-4 text-slate-800 flex items-center gap-2">
+                <Monitor size={24} className="text-red-500"/> Mesas Ocupadas (Cuentas Activas)
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {occupiedTables.length === 0 ? (
+                    <p className="text-slate-500 col-span-full text-center py-10">No hay mesas con cuentas abiertas.</p>
+                ) : (
+                    occupiedTables.map(table => (
+                        <div key={table.id} className="p-4 border rounded-lg bg-white shadow hover:border-red-400 transition">
+                            <h4 className="font-bold text-xl text-slate-800">Mesa {table.number}</h4>
+                            <p className="text-xs text-red-500 mb-2">Orden(es) en curso</p>
+                            <div className="text-3xl font-extrabold text-red-700 mt-2">
+                                {/* Muestra el total calculado y corregido */}
+                                ${calculateTotal(table.id).toFixed(2)}
+                            </div>
+                            <p className="text-xs text-slate-400 mt-2">Órdenes Activas: {activeOrders.filter(o => o.tableId === table.id).length}</p>
+                        </div>
+                    ))
+                )}
+            </div>
+        </div>
+    );
+};
+// ==========================================================
+
+
+// ==========================================================
+// COMPONENTE PRINCIPAL: ADMIN PANEL
+// ==========================================================
 interface AdminPanelProps {
   menuItems: MenuItem[];
   generatedMenu: MenuItem[];
   onGenerateMenu: (concept: string) => void;
-  // Faltaría: onApproveMenu, onUpdateItem, onDeleteItem
+  orders: Order[];
+  tables: Table[];
+  onProductAdded?: () => void;
 }
 
-// Subcomponente para la Generación de Menú con IA
-const AIGenerator: React.FC<{ onGenerate: (concept: string) => void }> = ({ onGenerate }) => {
-  const [concept, setConcept] = useState('Un menú de 5 platillos de comida callejera mexicana, con nombres muy creativos.');
-  const [loading, setLoading] = useState(false);
+const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGenerateMenu, orders, tables }) => {
+  const [concept, setConcept] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  // Se añade 'monitor' como nueva pestaña
+  const [activeTab, setActiveTab] = useState<'generator' | 'menu' | 'monitor'>('generator'); 
 
-  const handleGenerate = async () => {
-    setLoading(true);
-    await onGenerate(concept); // Llamamos a la función que inicia el proceso
-    setLoading(false); 
+  const handleGenerateClick = () => {
+    if (!concept) return;
+    setIsGenerating(true);
+    onGenerateMenu(concept);
+    setTimeout(() => setIsGenerating(false), 2000); 
+  };
+
+  const handleApproveItem = async (item: MenuItem) => {
+    try {
+        const payload = {
+            name: item.name,
+            // Asegura que price es un número, eliminando '$' si es string
+            price: typeof item.price === 'string' ? parseFloat((item.price as string).replace('$','')) : item.price,
+            category: item.category || "General",
+            description: item.description
+        };
+
+        await api.post('/products/', payload);
+        toast.success(`Producto "${item.name}" guardado en la Base de Datos`);
+    } catch (error) {
+        console.error(error);
+        toast.error("Error al guardar producto");
+    }
   };
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
-      <h3 className="text-xl font-bold mb-4 flex items-center gap-2 text-slate-700">
-        <Zap className="text-primary" /> Generador de Menú IA
-      </h3>
-      <p className="text-slate-600 mb-4">Describe el concepto de tu restaurante y deja que la IA (Gemini) cree un menú completo para ti.</p>
-      <textarea
-        value={concept}
-        onChange={(e) => setConcept(e.target.value)}
-        rows={4}
-        className="w-full p-3 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition"
-        placeholder="Ej: Menú de postres gourmet, 7 opciones, enfoque en chocolate y frutas de temporada."
-      />
-      <button
-        onClick={handleGenerate}
-        disabled={loading}
-        className="mt-4 w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition disabled:bg-slate-400 flex items-center justify-center gap-2"
-      >
-        {loading ? (
-          <>
-            <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-            Generando...
-          </>
-        ) : (
-          <>
-            <BookOpen size={20} /> Generar Menú de Prueba
-          </>
-        )}
-      </button>
+    <div className="p-6 bg-slate-50 min-h-screen">
+      <h1 className="text-3xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+        <SettingsIcon /> Panel de Administración
+      </h1>
+
+      {/* PESTAÑAS (AÑADIMOS 'MONITOR') */}
+      <div className="flex gap-4 mb-6 border-b">
+        <button 
+            onClick={() => setActiveTab('generator')}
+            className={`pb-2 px-4 font-bold ${activeTab === 'generator' ? 'border-b-4 border-blue-600 text-blue-600' : 'text-slate-400'}`}
+        >
+            <Sparkles size={16} className="inline mr-2"/> Generador IA
+        </button>
+        <button 
+            onClick={() => setActiveTab('menu')}
+            className={`pb-2 px-4 font-bold ${activeTab === 'menu' ? 'border-b-4 border-orange-600 text-orange-600' : 'text-slate-400'}`}
+        >
+            Ψ Menú Actual ({menuItems.length})
+        </button>
+         <button 
+            onClick={() => setActiveTab('monitor')} // NUEVA PESTAÑA
+            className={`pb-2 px-4 font-bold ${activeTab === 'monitor' ? 'border-b-4 border-red-600 text-red-600' : 'text-slate-400'}`}
+        >
+            👁️ Monitor
+        </button>
+      </div>
+
+      {/* RENDERIZADO CONDICIONAL POR PESTAÑA */}
+      {activeTab === 'generator' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* ... Contenido del Generador IA ... */}
+          </div>
+      )}
+
+      {activeTab === 'menu' && (
+          <div className="bg-white rounded-xl shadow border overflow-hidden">
+              {/* ... Contenido del Menú Actual ... */}
+          </div>
+      )}
+
+      {/* 🟢 NUEVO CONTENIDO: MONITOR DE MESAS 🟢 */}
+      {activeTab === 'monitor' && (
+          <TableMonitor 
+              tables={tables} 
+              orders={orders} 
+          />
+      )}
+
     </div>
   );
 };
 
-// Componente Principal
-const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGenerateMenu }) => {
-  const [activeTab, setActiveTab] = useState('ai'); // 'ai', 'menu', 'settings'
+// ... Resto de componentes y exportaciones
 
-  const totalProducts = menuItems.length;
-
-  return (
-    <div className="p-6 h-full flex flex-col bg-slate-50">
-      <h2 className="text-3xl font-extrabold text-slate-800 mb-6 border-b pb-4">
-        <Settings className="inline-block mr-2 text-primary" size={28} /> Panel de Administración
-      </h2>
-
-      {/* Navegación de Pestañas */}
-      <div className="flex gap-2 mb-6 border-b">
-        <button
-          onClick={() => setActiveTab('ai')}
-          className={`px-4 py-3 font-bold transition-colors border-b-4 ${activeTab === 'ai' ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-        >
-          <Zap size={18} className="inline-block mr-1" /> Generador IA
-        </button>
-        <button
-          onClick={() => setActiveTab('menu')}
-          className={`px-4 py-3 font-bold transition-colors border-b-4 ${activeTab === 'menu' ? 'border-primary text-primary' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-        >
-          <Utensils size={18} className="inline-block mr-1" /> Menú ({totalProducts})
-        </button>
-      </div>
-
-      {/* Contenido de Pestañas */}
-      <div className="flex-1 overflow-y-auto">
-        {activeTab === 'ai' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <AIGenerator onGenerate={onGenerateMenu} />
-            
-            {/* Vista Previa del Menú Generado */}
-            <div className="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
-                <h3 className="text-xl font-bold mb-4 text-slate-700">Menú Sugerido (Revisión)</h3>
-                
-                {generatedMenu.length > 0 ? (
-                  <>
-                    <div className="space-y-3">
-                      {generatedMenu.map((item) => (
-                        <div key={item.id} className="flex justify-between p-3 bg-blue-50 rounded-lg border border-blue-100">
-                           <div className="font-semibold text-slate-700">
-                               {item.name}
-                               <p className="text-xs text-slate-500 italic font-normal">{item.description}</p>
-                           </div>
-                           <span className="font-bold text-blue-700">${item.price}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <button /* onClick={onApproveMenu} */ className="mt-4 w-full bg-primary text-white py-3 rounded-lg font-bold hover:bg-orange-600 transition">
-                      Aprobar y Agregar al Menú
-                    </button>
-                  </>
-                ) : (
-                  <p className="text-center text-slate-400 py-10 italic">El menú generado por la IA aparecerá aquí.</p>
-                )}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'menu' && (
-          <div className="bg-white p-6 rounded-xl shadow-lg border border-slate-200">
-            <h3 className="text-xl font-bold mb-4 text-slate-700">Administración de Productos</h3>
-            <div className="grid grid-cols-1 gap-4">
-              {menuItems.map(item => (
-                <div key={item.id} className="flex justify-between items-center p-3 border-b hover:bg-slate-50 rounded-lg">
-                  <div className="font-medium text-slate-700">{item.name} <span className="text-xs text-primary font-bold">(${item.price})</span></div>
-                  <div className="flex gap-2">
-                    <button className="text-blue-500 hover:text-blue-700 p-2 rounded-full hover:bg-blue-100"><Edit size={18}/></button>
-                    <button className="text-red-500 hover:text-red-700 p-2 rounded-full hover:bg-red-100"><Trash2 size={18}/></button>
-                  </div>
-                </div>
-              ))}
-              {menuItems.length === 0 && <p className="text-center text-slate-400 py-10">No hay productos en el menú.</p>}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
+const SettingsIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+);
 
 export default AdminPanel;

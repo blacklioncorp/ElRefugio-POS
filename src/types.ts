@@ -1,41 +1,14 @@
 // src/types.ts
 
-// Enums (Importante: Vite necesita que estos tengan 'export')
-export enum OrderStatus {
-  PENDING = 'PENDING',
-  COOKING = 'COOKING',
-  READY = 'READY',
-  OUT_FOR_DELIVERY = 'OUT_FOR_DELIVERY',
-  DELIVERED = 'DELIVERED',
-  PAID = 'PAID',
-  CANCELLED = 'CANCELLED'
-}
+// Definición estricta de Roles
+export type UserRole = 'WAITER' | 'KITCHEN' | 'ADMIN' | 'DELIVERY'; 
 
-// Types
-export type OrderType = 'DINE_IN' | 'DELIVERY';
-export type UserRole = 'WAITER' | 'COOK' | 'ADMIN';
-export type AppView = 'WAITER' | 'KITCHEN' | 'DELIVERY' | 'ADMIN';
-
-// Interfaces
 export interface User {
   username: string;
   role: UserRole;
 }
 
-export interface CustomerDetails {
-  name: string;
-  address: string;
-  phone: string;
-}
-
-export interface MenuItem {
-  id: string;
-  categoryId: string;
-  name: string;
-  description: string;
-  price: number;
-  imageUrl?: string;
-}
+export type AppView = 'WAITER' | 'KITCHEN' | 'ADMIN' | 'DELIVERY';
 
 export interface MenuCategory {
   id: string;
@@ -43,23 +16,43 @@ export interface MenuCategory {
   icon: string;
 }
 
+export interface MenuItem {
+  id: string; // Puede ser número convertido a string
+  name: string;
+  price: number;
+  category: string; // Coincide con la API de Python
+  description?: string;
+  imageUrl?: string;
+  is_active?: boolean;
+  // Soporte legacy para el frontend viejo
+  categoryId?: string; 
+}
+
 export interface OrderItem {
   menuItem: MenuItem;
   quantity: number;
-  notes?: string;
+  note?: string;       // <--- NUEVO: Anotación del mesero
+  extraCharge?: number; // <--- NUEVO: Cargo extra por personalización
+}
+
+// Enum para estados de orden (Mejor que strings sueltos)
+export enum OrderStatus {
+  PENDING = 'PENDING',
+  READY = 'READY',
+  DELIVERED = 'DELIVERED',
+  CANCELLED = 'CANCELLED',
+  PAID = 'PAID'
 }
 
 export interface Order {
-  id: string;
-  type: OrderType;
+  id: any; // Flexible para aceptar strings o numbers
+  type: 'DINE_IN' | 'TAKE_AWAY' | 'DELIVERY';
   tableId?: string;
-  customer?: CustomerDetails;
   items: OrderItem[];
-  status: OrderStatus;
+  status: OrderStatus | string; // Flexible para recibir de API
   timestamp: number;
-  completedTimestamp?: number;
-  dateStr: string;
-  total: number;
+  dateStr?: string;
+  total?: number;
 }
 
 export interface Table {
