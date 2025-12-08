@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { LayoutGrid, UtensilsCrossed, Settings, LogOut, Bike } from 'lucide-react';
-import { Toaster, toast } from 'sonner'; // Importación de notificaciones
+import { Toaster, toast } from 'sonner';
 import WaiterPanel from './components/WaiterPanel';
 import KitchenPanel from './components/KitchenPanel';
 import AdminPanel from './components/AdminPanel';
 import DeliveryPanel from './components/DeliveryPanel';
 import LoginScreen from './components/LoginScreen';
 import { MenuItem, MenuCategory, Table, Order, OrderStatus, AppView, OrderItem, User, UserRole } from './types';
-import { api } from './services/api'; // Tu cable a Render
+import { api } from './services/api';
 
 // Datos Iniciales
 const INITIAL_CATEGORIES: MenuCategory[] = [
@@ -30,27 +30,38 @@ const App: React.FC = () => {
   // 1. FUNCIÓN CENTRAL DE CARGA
   const fetchOrders = useCallback(async () => {
     try {
-      const serverOrders = await api.get('/orders/');
+      const serverOrders: Order[] = await api.get('/orders/');
       if (Array.isArray(serverOrders)) {
         setOrders(serverOrders);
-        // Actualizar ocupación de mesas basado en órdenes vivas
+        
+        // Determinar ocupación de mesas basándose en IDs de cadena
         const occupiedTables = serverOrders
             .filter((o: Order) => o.status !== OrderStatus.PAID && o.status !== OrderStatus.CANCELLED)
-            .map((o: Order) => o.tableId);
+            .map((o: Order) => String(o.tableId)); // Convertir IDs a string para la comparación
             
-        setTables(prev => prev.map(t => 
-            occupiedTables.includes(t.id) ? { ...t, isOccupied: true } : { ...t, isOccupied: false }
-        ));
+        setTables(prev => prev.map(t => {
+            const isOccupied = occupiedTables.includes(String(t.id)); 
+            return { ...t, isOccupied: isOccupied };
+        }));
+        return serverOrders; // Importante: retorna la lista fresca
       }
+      return [];
     } catch (error) {
       console.error("Error fetching orders:", error);
+      return [];
     }
   }, []);
 
   const fetchProducts = async () => {
       try {
         const products = await api.get('/products/');
-        if (products.length > 0) setMenuItems(products);
+        // Asegurar que el ID y la categoría son consistentes
+        const standardizedProducts = products.map((p: any) => ({
+            ...p,
+            id: String(p.id),
+            category: p.category || p.category_id || 'General',
+        }));
+        if (standardizedProducts.length > 0) setMenuItems(standardizedProducts);
       } catch (error) {
         console.error("Error fetching products:", error);
       }
@@ -58,12 +69,12 @@ const App: React.FC = () => {
 
   // 2. EFECTO DE INICIO Y POLLING (Auto-refresco)
   useEffect(() => {
-    if (user) { // Solo sincronizar si hay usuario logueado
+    if (user) { 
         console.log("🔌 Sincronizando sistema...");
         fetchProducts();
         fetchOrders();
 
-        const interval = setInterval(fetchOrders, 5000); // Cada 5 seg
+        const interval = setInterval(fetchOrders, 5000); 
         return () => clearInterval(interval);
     }
   }, [fetchOrders, user]);
@@ -71,7 +82,6 @@ const App: React.FC = () => {
   const handleLogin = (role: UserRole, username: string) => {
     setUser({ role, username });
     
-    // CORRECCIÓN: Usamos 'KITCHEN' en lugar de 'COOK'
     if (role === 'KITCHEN') {
         setView('KITCHEN');
     } else if (role === 'ADMIN') {
@@ -81,97 +91,93 @@ const App: React.FC = () => {
     }
   };
  
-  // CREAR ORDEN (Corregido para evitar Error 422)
+  // CREAR ORDEN
   const placeOrder = async (tableId: string, items: OrderItem[]) => {
-    // 1. UI Optimista (Lo que ve el usuario inmediatamente)
     const tempId = `TEMP-${Date.now()}`;
+    const totalWithExtras = items.reduce((sum, i) => sum + ((i.menuItem.price + (i.extraCharge || 0)) * i.quantity), 0);
+
     const newOrderVisual: Order = {
       id: tempId,
       type: 'DINE_IN',
-      tableId, // React lo necesita así
+      tableId,
       items,
       status: OrderStatus.PENDING,
       timestamp: Date.now(),
       dateStr: new Date().toLocaleDateString('en-CA'),
-      total: items.reduce((sum, i) => sum + (i.menuItem.price * i.quantity), 0)
+      total: totalWithExtras
     };
 
     setOrders(prev => [...prev, newOrderVisual]);
-    
-    // Si la mesa estaba libre, la marcamos ocupada visualmente
     setTables(prev => prev.map(t => t.id === tableId ? { ...t, isOccupied: true } : t));
 
     try {
-        // 2. TRADUCCIÓN DE DATOS (El secreto para que Python entienda)
         const orderPayload = {
-            table_id: tableId,  // <--- AQUÍ ESTÁ LA CLAVE (tableId -> table_id)
+            table_id: tableId, 
             status: "PENDING",
-            total: newOrderVisual.total,
-            // Transformamos los items para mandar solo lo que la BD necesita
+            total: totalWithExtras, 
             items: items.map(item => ({
-                product_id: item.menuItem.id, // Mandamos el ID, no el objeto entero
+                product_id: item.menuItem.id,
                 quantity: item.quantity,
-                price: item.menuItem.price      // Precio al momento de la venta
+                price: item.menuItem.price,
+                note: item.note,
+                extra_charge: item.extraCharge, // Usar snake_case para Python
             }))
         };
 
-        // 3. Enviar el paquete traducido
         await api.post('/orders/', orderPayload);
-        
         toast.success("Orden enviada a cocina");
-        fetchOrders(); // Recargar para obtener el ID real de la BD
+        fetchOrders();
     } catch (e) {
         console.error("❌ Error guardando orden", e);
         toast.error("Error de conexión al guardar orden");
-        // Opcional: Podrías eliminar la orden visual si falló
     }
   };
 
-  // src/App.tsx (Añadir dentro del componente App: React.FC)
-
+// GESTIÓN DE PAGO Y LIBERACIÓN DE MESA (CORREGIDO)
 const handlePayOrder = async (orderId: string, tableId: string) => {
     try {
         // 1. Marcar la orden como PAGADA en el Backend
         await api.put(`/orders/${orderId}/status`, { status: OrderStatus.PAID });
         
-        // 2. Liberar la mesa en el Backend (si no hay más órdenes activas en esa mesa)
+        // 2. Ejecutar fetchOrders Y USAR EL RESULTADO FRESCO
+        const updatedOrders: Order[] = await fetchOrders(); 
         
-        // Verificamos si hay otras órdenes activas en esa mesa, excluyendo la que se acaba de pagar
-        const remainingActiveOrders = orders.filter(o => 
-            o.tableId === tableId && 
-            o.id !== orderId &&
+        // 3. Liberar la mesa en el Backend si no hay más órdenes activas.
+        
+        const remainingActiveOrders = updatedOrders.filter(o => 
+            String(o.tableId) === tableId && // Usar String() para tolerar IDs
             o.status !== OrderStatus.PAID &&
             o.status !== OrderStatus.CANCELLED
         ).length;
         
         if (remainingActiveOrders === 0) {
-            // Si es la última orden activa de la mesa, la liberamos
             await api.put(`/tables/${tableId}/occupancy`, { is_occupied: false });
             
-            // 3. Actualizar el estado local de la mesa
-            setTables(prev => prev.map(t => t.id === tableId ? { ...t, isOccupied: false } : t));
+            // 4. Actualizar el estado local (redundante, pero asegura el estado)
+            setTables(prev => prev.map(t => String(t.id) === tableId ? { ...t, isOccupied: false } : t));
         }
 
         toast.success(`Cuenta pagada. Mesa ${tableId} liberada.`);
-        fetchOrders(); // Recargar el estado global
     } catch (e) {
         console.error("Error al pagar la cuenta", e);
         toast.error("Error al procesar el pago.");
     }
 };
 
-
-
-  // ACTUALIZAR ESTADO
+  // ACTUALIZAR ESTADO (READY/CANCELLED) (CORREGIDO)
   const handleUpdateOrderStatus = async (orderId: string, newStatus: OrderStatus) => {
     try {
+      // 1. Marcar la orden en el Backend
       await api.put(`/orders/${orderId}/status`, { status: newStatus });
-      await fetchOrders(); 
       
-      // NOTIFICACIÓN (TOAST)
+      // 2. Forzar la recarga de datos
+      const currentOrders: Order[] = await fetchOrders(); 
+      
+      // 3. NOTIFICACIÓN (TOAST) - Usando los datos FRESCOS (currentOrders)
       if (newStatus === OrderStatus.READY) {
-         const order = orders.find(o => o.id === orderId || o.id === parseInt(orderId));
-         const table = tables.find(t => t.id === order?.tableId);
+         // Buscamos la orden en los datos frescos
+         const order = currentOrders.find(o => String(o.id) === String(orderId));
+         const table = tables.find(t => String(t.id) === String(order?.tableId)); 
          const tableName = table ? `MESA ${table.number}` : 'Una orden';
          
          toast.success(`🔔 ¡${tableName} ESTÁ LISTA!`, {
@@ -189,7 +195,12 @@ const handlePayOrder = async (orderId: string, tableId: string) => {
     }
   };
 
+  const handleProductAction = () => {
+    fetchProducts();
+  };
+
   const handleGenerateMenu = async (concept: string) => {
+    // ... (Tu código de generateMenu se mantiene)
     toast.info("Generando menú con IA... espere.");
     try {
         const generated = await api.post('/ai/generate_menu', { concept });
@@ -210,18 +221,16 @@ const handlePayOrder = async (orderId: string, tableId: string) => {
     }
   };
 
-  // src/App.tsx (Solo reemplaza la sección del return)
-
+  // RENDERIZADO
   if (!user) return <LoginScreen onLogin={handleLogin} />;
 
   return (
     <div className="min-h-screen bg-slate-100 font-sans flex flex-col">
       <Toaster /> 
-
+      {/* ... (Tu navbar) ... */}
       <nav className="bg-slate-900 text-white h-16 flex items-center px-6 justify-between shadow-lg z-50">
         <div className="flex items-center gap-3 font-bold text-xl"><div className="w-8 h-8 bg-primary rounded flex items-center justify-center">R</div> El Refugio</div>
         <div className="flex gap-2">
-          {/* CORRECCIÓN: Usamos user?.role para prevenir el error de "Cannot read properties of null" */}
           {user?.role !== 'KITCHEN' && <button onClick={() => setView('WAITER')} className={`flex gap-2 px-4 py-2 rounded ${view === 'WAITER' ? 'bg-primary' : 'hover:bg-white/10'}`}><LayoutGrid size={20}/> Mesas</button>}
           
           {(user?.role === 'KITCHEN' || user?.role === 'ADMIN') && <button onClick={() => setView('KITCHEN')} className={`flex gap-2 px-4 py-2 rounded ${view === 'KITCHEN' ? 'bg-primary' : 'hover:bg-white/10'}`}><UtensilsCrossed size={20}/> Cocina</button>}
@@ -259,8 +268,9 @@ const handlePayOrder = async (orderId: string, tableId: string) => {
         menuItems={menuItems} 
         generatedMenu={generatedMenu}
         onGenerateMenu={handleGenerateMenu}
-        orders={orders} // <--- NUEVO
-        tables={tables} // <--- NUEVO
+        orders={orders}
+        tables={tables}
+        onProductAction={handleProductAction}
     />
 )}
         

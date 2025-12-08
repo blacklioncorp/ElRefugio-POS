@@ -12,7 +12,7 @@ interface KitchenPanelProps {
 const KitchenPanel: React.FC<KitchenPanelProps> = ({ orders, tables, onUpdateStatus }) => {
   // Filtramos solo las órdenes que están PENDIENTES (Cocinándose)
   const pendingOrders = orders.filter(o => o.status === OrderStatus.PENDING);
-
+  
   // Filtramos las que ya están LISTAS (Esperando ser recogidas)
   const readyOrders = orders.filter(o => o.status === OrderStatus.READY);
 
@@ -32,7 +32,9 @@ const KitchenPanel: React.FC<KitchenPanelProps> = ({ orders, tables, onUpdateSta
 
         {/* TARJETAS DE ÓRDENES PENDIENTES */}
         {pendingOrders.map(order => {
-          const tableNumber = tables.find(t => t.id === order.tableId)?.number || '?';
+          // CORRECCIÓN DE LÓGICA: Buscar la mesa de forma tolerante a IDs (string vs number)
+          const table = tables.find(t => String(t.id) === String(order.tableId));
+          const tableNumber = table?.number || '?';
           
           return (
             <div key={order.id} className="bg-white rounded-xl shadow-lg border-l-8 border-yellow-400 overflow-hidden flex flex-col animate-in fade-in zoom-in">
@@ -46,8 +48,9 @@ const KitchenPanel: React.FC<KitchenPanelProps> = ({ orders, tables, onUpdateSta
               <div className="p-4 flex-1">
                 <ul className="space-y-3">
                   {order.items.map((item: any, i: number) => {
-                    // 1. Detección inteligente del nombre (Backend vs Frontend)
-                    const productName = item.menuItem?.name || item.menu_item?.name || 'Producto Desconocido';
+                    // CORRECCIÓN DE PRODUCTO: Acceso defensivo al nombre (Backend vs Frontend)
+                    const menuItemData = item.menuItem || item.menu_item;
+                    const productName = menuItemData?.name || 'Producto Desconocido';
                     
                     return (
                         <li key={i} className="border-b border-dashed pb-2 last:border-0">
@@ -58,14 +61,14 @@ const KitchenPanel: React.FC<KitchenPanelProps> = ({ orders, tables, onUpdateSta
                                 </span>
                             </div>
 
-                            {/* 2. Notas del Mesero (DENTRO DEL LI) */}
+                            {/* Notas del Mesero */}
                             {item.note && (
                                 <p className="text-sm italic text-slate-500 mt-1 pl-2 border-l-2 border-orange-300 bg-orange-50 p-1 rounded">
                                     📝 "{item.note}"
                                 </p>
                             )}
 
-                            {/* 3. Cargos Extras (DENTRO DEL LI) */}
+                            {/* Cargos Extras */}
                             {item.extraCharge && item.extraCharge > 0 && (
                                 <p className="text-xs font-bold text-red-600 mt-1 text-right">
                                     +${Number(item.extraCharge).toFixed(2)} Extra
@@ -92,7 +95,10 @@ const KitchenPanel: React.FC<KitchenPanelProps> = ({ orders, tables, onUpdateSta
 
         {/* TARJETAS DE ÓRDENES LISTAS (VISUALIZACIÓN) */}
         {readyOrders.map(order => {
-            const tableNumber = tables.find(t => t.id === order.tableId)?.number || '?';
+            // CORRECCIÓN: Buscar la mesa de forma tolerante para órdenes listas
+            const table = tables.find(t => String(t.id) === String(order.tableId));
+            const tableNumber = table?.number || '?';
+
             return (
                 <div key={order.id} className="bg-green-50 rounded-xl border border-green-200 opacity-70 scale-95">
                     <div className="p-3 border-b border-green-100 flex justify-between items-center">

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-// IMPORTANTE: Se elimina Plus y Trash2 si no se usan en el JSX para evitar advertencias
 import type { MenuItem, Order, Table } from '../types'; 
-import { Sparkles, Save, Monitor } from 'lucide-react'; // Monitor es un buen icono para la nueva pestaña
+import { Sparkles, Save, Monitor } from 'lucide-react'; 
 import { api } from '../services/api';
 import { toast } from 'sonner';
-import { OrderStatus } from '../types'; // Necesario para filtrar las órdenes
+import { OrderStatus } from '../types'; 
+// Asegúrate de que ProductManager existe en src/components/
+import ProductManager from './ProductManager'; 
 
 // ==========================================================
 // COMPONENTE AUXILIAR: MONITOR DE MESAS
@@ -15,12 +16,9 @@ const TableMonitor: React.FC<{ tables: Table[], orders: Order[] }> = ({ tables, 
     const activeOrders = orders.filter(o => o.status !== OrderStatus.PAID && o.status !== OrderStatus.CANCELLED);
     
     // Filtramos las mesas ocupadas que tienen órdenes activas
-    // NOTA: Si una mesa está isOccupied=true, pero no tiene activeOrders, esto puede indicar un error de estado.
-    // Usaremos isOccupied como fuente principal.
     const occupiedTables = tables.filter(t => t.isOccupied);
 
     const calculateTotal = (tableId: string): number => {
-        // Encontramos todas las órdenes activas de esta mesa.
         const tableOrders = activeOrders.filter(o => o.tableId === tableId);
         if (tableOrders.length === 0) return 0;
         
@@ -50,7 +48,6 @@ const TableMonitor: React.FC<{ tables: Table[], orders: Order[] }> = ({ tables, 
                             <h4 className="font-bold text-xl text-slate-800">Mesa {table.number}</h4>
                             <p className="text-xs text-red-500 mb-2">Orden(es) en curso</p>
                             <div className="text-3xl font-extrabold text-red-700 mt-2">
-                                {/* Muestra el total calculado y corregido */}
                                 ${calculateTotal(table.id).toFixed(2)}
                             </div>
                             <p className="text-xs text-slate-400 mt-2">Órdenes Activas: {activeOrders.filter(o => o.tableId === table.id).length}</p>
@@ -74,12 +71,13 @@ interface AdminPanelProps {
   orders: Order[];
   tables: Table[];
   onProductAdded?: () => void;
+  onProductAction: () => void; // Prop obligatoria para recargar el menú
+  
 }
-
-const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGenerateMenu, orders, tables }) => {
+// CORRECCIÓN: Desestructuramos onProductAction de las props
+const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGenerateMenu, orders, tables, onProductAction }) => {
   const [concept, setConcept] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
-  // Se añade 'monitor' como nueva pestaña
   const [activeTab, setActiveTab] = useState<'generator' | 'menu' | 'monitor'>('generator'); 
 
   const handleGenerateClick = () => {
@@ -93,7 +91,6 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGen
     try {
         const payload = {
             name: item.name,
-            // Asegura que price es un número, eliminando '$' si es string
             price: typeof item.price === 'string' ? parseFloat((item.price as string).replace('$','')) : item.price,
             category: item.category || "General",
             description: item.description
@@ -113,7 +110,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGen
         <SettingsIcon /> Panel de Administración
       </h1>
 
-      {/* PESTAÑAS (AÑADIMOS 'MONITOR') */}
+      {/* PESTAÑAS */}
       <div className="flex gap-4 mb-6 border-b">
         <button 
             onClick={() => setActiveTab('generator')}
@@ -128,7 +125,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGen
             Ψ Menú Actual ({menuItems.length})
         </button>
          <button 
-            onClick={() => setActiveTab('monitor')} // NUEVA PESTAÑA
+            onClick={() => setActiveTab('monitor')} 
             className={`pb-2 px-4 font-bold ${activeTab === 'monitor' ? 'border-b-4 border-red-600 text-red-600' : 'text-slate-400'}`}
         >
             👁️ Monitor
@@ -138,15 +135,19 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGen
       {/* RENDERIZADO CONDICIONAL POR PESTAÑA */}
       {activeTab === 'generator' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* ... Contenido del Generador IA ... */}
+            {/* Contenido del Generador IA... */}
           </div>
       )}
 
+      {/* 🟢 ZONA DE MENÚ ACTUAL: USAMOS EL CRUD MANAGER 🟢 */}
       {activeTab === 'menu' && (
-          <div className="bg-white rounded-xl shadow border overflow-hidden">
-              {/* ... Contenido del Menú Actual ... */}
-          </div>
+          <ProductManager 
+              menuItems={menuItems} 
+              onProductAction={onProductAction} // Ahora la prop existe y se pasa correctamente
+          />
       )}
+      
+      {/* CORRECCIÓN: Se elimina el bloque duplicado de activeTab === 'menu' */}
 
       {/* 🟢 NUEVO CONTENIDO: MONITOR DE MESAS 🟢 */}
       {activeTab === 'monitor' && (
@@ -160,7 +161,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ menuItems, generatedMenu, onGen
   );
 };
 
-// ... Resto de componentes y exportaciones
+// ... Resto de componentes y exportaciones (SettingsIcon y TableMonitor)
 
 const SettingsIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.72v-.51a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
